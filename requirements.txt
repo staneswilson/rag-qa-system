@@ -1,0 +1,7 @@
+numpy==1.26.4
+pandas
+tqdm
+sentence-transformers
+transformers
+pdfplumber
+pytest
