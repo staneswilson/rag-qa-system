@@ -146,6 +146,14 @@ def cmd_query(args):
     with open(doc_map_path, "rb") as f:
         chunks_map = pickle.load(f)
 
+    # NEW: Load the ID-to-source mapping file
+    id_map_path = OUTPUT_DIR / "id_mapping.json"
+    if not id_map_path.exists():
+        raise FileNotFoundError("ID mapping file not found. Please run 'preprocess' first.")
+    logger.info("Loading ID to source map...")
+    with open(id_map_path, "r", encoding="utf-8") as f:
+        id_to_source_map = json.load(f)
+
     reranker = Reranker() if args.rerank else None
     
     # Load queries from Queries.json
@@ -160,16 +168,15 @@ def cmd_query(args):
     results_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Processing {len(queries)} queries...")
-    # MODIFIED: Change the loop to correctly handle a list of dictionaries
     for item in tqdm(queries, total=len(queries), desc="Running queries"):
-        qid = item.get("id") or item.get("query_id")
+        qid = item.get("query_num") or item.get("id") or item.get("query_id")
         query = item.get("query") or item.get("text")
 
         if qid is None or query is None:
             logger.warning(f"Skipping invalid query item: {item}")
             continue
 
-        # 1. Retrieve candidate IDs from FAISS
+        # 1. Retrieve candidate chunk IDs from FAISS
         cand_ids, _ = retriever.retrieve(query, k=args.candidates)
         
         # 2. Get text for candidates from our fast map
@@ -177,16 +184,32 @@ def cmd_query(args):
         
         # 3. Rerank or take top K
         if reranker:
-            top_ids = reranker.rerank(query, candidates, top_k=args.k)
+            top_chunk_ids = reranker.rerank(query, candidates, top_k=args.k)
         else:
-            top_ids = [c["id"] for c in candidates[:args.k]]
+            top_chunk_ids = [c["id"] for c in candidates[:args.k]]
             
-        out = {"query": query, "response": top_ids}
+        # MODIFIED: Map chunk IDs to source filenames
+        final_filenames = []
+        seen_filenames = set()
+        for chunk_id in top_chunk_ids:
+            # Filter out any -1 values from Faiss
+            if chunk_id == -1:
+                continue
+            
+            # Look up the original source string (e.g., 'filename.txt::chunk0')
+            source_str = id_to_source_map.get(str(chunk_id))
+            if source_str:
+                # Extract just the filename
+                filename = source_str.split("::")[0]
+                if filename not in seen_filenames:
+                    final_filenames.append(filename)
+                    seen_filenames.add(filename)
+        
+        out = {"query": query, "response": final_filenames}
         save_json(out, results_dir / f"{qid}.json")
         
     zip_dir(results_dir, OUTPUT_DIR / f"{STARTUP_NAME}_PS4.zip")
     logger.info("Query run finished and submission package created.")
-
     
 def cmd_eval(args):
     logger.info("Starting evaluation...")
